@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"golang.org/x/exp/maps"
 	"golang.org/x/tools/imports"
 
 	"github.com/deepmap/oapi-codegen/v2/pkg/util"
@@ -404,30 +405,44 @@ func Generate(spec *openapi3.T, opts Configuration) (string, error) {
 }
 
 func GenerateTypeDefinitions(t *template.Template, swagger *openapi3.T, ops []OperationDefinition, excludeSchemas []string) (string, error) {
-	var allTypes []TypeDefinition
+	allTypes := make(map[string]TypeDefinition)
+
 	if swagger.Components != nil {
 		schemaTypes, err := GenerateTypesForSchemas(t, swagger.Components.Schemas, excludeSchemas)
 		if err != nil {
 			return "", fmt.Errorf("error generating Go types for component schemas: %w", err)
 		}
 
+		for _, schemaType := range schemaTypes {
+			allTypes[schemaType.TypeName] = schemaType
+		}
+
 		paramTypes, err := GenerateTypesForParameters(t, swagger.Components.Parameters)
 		if err != nil {
 			return "", fmt.Errorf("error generating Go types for component parameters: %w", err)
 		}
-		allTypes = append(schemaTypes, paramTypes...)
+
+		for _, paramType := range paramTypes {
+			allTypes[paramType.TypeName] = paramType
+		}
 
 		responseTypes, err := GenerateTypesForResponses(t, swagger.Components.Responses)
 		if err != nil {
 			return "", fmt.Errorf("error generating Go types for component responses: %w", err)
 		}
-		allTypes = append(allTypes, responseTypes...)
+
+		for _, responseType := range responseTypes {
+			allTypes[responseType.TypeName] = responseType
+		}
 
 		bodyTypes, err := GenerateTypesForRequestBodies(t, swagger.Components.RequestBodies)
 		if err != nil {
 			return "", fmt.Errorf("error generating Go types for component request bodies: %w", err)
 		}
-		allTypes = append(allTypes, bodyTypes...)
+
+		for _, bodyType := range bodyTypes {
+			allTypes[bodyType.TypeName] = bodyType
+		}
 	}
 
 	// Go through all operations, and add their types to allTypes, so that we can
@@ -436,7 +451,23 @@ func GenerateTypeDefinitions(t *template.Template, swagger *openapi3.T, ops []Op
 	// all types needed to be scanned for enums, which includes those within operations.
 	enumTypes := allTypes
 	for _, op := range ops {
-		enumTypes = append(enumTypes, op.TypeDefinitions...)
+		for _, opTypeDefinition := range op.TypeDefinitions {
+			allTypes[opTypeDefinition.TypeName] = opTypeDefinition
+		}
+	}
+
+	// Populate transitive properties, such as whether types require JSON
+	// serialisation.
+	for _, typeDefinition := range allTypes {
+		if !typeDefinition.Schema.IsRef() {
+			continue
+		}
+
+		rootRef := RootRef(typeDefinition, allTypes)
+
+		if rootRef.Schema.RequiresJSONSerialisation() {
+			typeDefinition.Schema.DefineViaAlias = true
+		}
 	}
 
 	operationsOut, err := GenerateTypesForOperations(t, ops)
@@ -444,27 +475,29 @@ func GenerateTypeDefinitions(t *template.Template, swagger *openapi3.T, ops []Op
 		return "", fmt.Errorf("error generating Go types for component request bodies: %w", err)
 	}
 
-	enumsOut, err := GenerateEnums(t, enumTypes)
+	allTypeValues := maps.Values(allTypes)
+
+	enumsOut, err := GenerateEnums(t, maps.Values(enumTypes))
 	if err != nil {
 		return "", fmt.Errorf("error generating code for type enums: %w", err)
 	}
 
-	typesOut, err := GenerateTypes(t, allTypes)
+	typesOut, err := GenerateTypes(t, allTypeValues)
 	if err != nil {
 		return "", fmt.Errorf("error generating code for type definitions: %w", err)
 	}
 
-	allOfBoilerplate, err := GenerateAdditionalPropertyBoilerplate(t, allTypes)
+	allOfBoilerplate, err := GenerateAdditionalPropertyBoilerplate(t, allTypeValues)
 	if err != nil {
 		return "", fmt.Errorf("error generating allOf boilerplate: %w", err)
 	}
 
-	unionBoilerplate, err := GenerateUnionBoilerplate(t, allTypes)
+	unionBoilerplate, err := GenerateUnionBoilerplate(t, allTypeValues)
 	if err != nil {
 		return "", fmt.Errorf("error generating union boilerplate: %w", err)
 	}
 
-	unionAndAdditionalBoilerplate, err := GenerateUnionAndAdditionalProopertiesBoilerplate(t, allTypes)
+	unionAndAdditionalBoilerplate, err := GenerateUnionAndAdditionalProopertiesBoilerplate(t, allTypeValues)
 	if err != nil {
 		return "", fmt.Errorf("error generating boilerplate for union types with additionalProperties: %w", err)
 	}

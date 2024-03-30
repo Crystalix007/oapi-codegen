@@ -59,6 +59,12 @@ func (s Schema) TypeDecl() string {
 	return s.GoType
 }
 
+// RequiresJSONSerialisation returns true if the schema requires custom JSON
+// serialisation, eg, if it's a union type.
+func (s Schema) RequiresJSONSerialisation() bool {
+	return len(s.UnionElements) != 0
+}
+
 // AddProperty adds a new property to the current Schema, and returns an error
 // if it collides. Two identical fields will not collide, but two properties by
 // the same name, but different definition, will collide. It's safe to merge the
